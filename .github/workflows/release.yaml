@@ -24,6 +24,8 @@ jobs:
       uses: cycjimmy/semantic-release-action@v4
       with:
         branch: main
+        extra_plugins: |
+          conventional-changelog-conventionalcommits@^7
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         npm_config_loglevel: error

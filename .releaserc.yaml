@@ -5,8 +5,7 @@ tagFormat: "v${version}"
 plugins:
   # Every commit patch release
   - ["@semantic-release/commit-analyzer",
-     { "preset": "conventionalcommits",
-       "releaseRules": [ { "type": "*", "release": "patch" } ] }]
+     { "releaseRules":[{"type":"*","release":"patch"}] }]
   # - "@semantic-release/release-notes-generator"
   # Optional but nice
   # - ["@semantic-release/changelog",
