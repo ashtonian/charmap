@@ -1,5 +1,24 @@
+branches:
+  - main
+
+tagFormat: "v${version}"
 plugins:
-  - "@semantic-release/commit-analyzer"
+  # Every commit patch release
+  - ["@semantic-release/commit-analyzer",
+     { "preset": "conventionalcommits",
+       "releaseRules": [ { "type": "*", "release": "patch" } ] }]
   - "@semantic-release/release-notes-generator"
+  # Optional but nice
+  - ["@semantic-release/changelog",
+     { "changelogFile": "CHANGELOG.md",
+       "changelogTitle": "# Changelog" }]
+  # Attach the CLI binary to the Release
   - ["@semantic-release/github",
-     { "assets": [{ "path": "charmap", "label": "charmap (linux/amd64)" }] }]
+     { "assets": [
+         { "path": "charmap",
+           "label": "charmap (Linux amd64)" }
+       ] }]
+  # Commit back the updated CHANGELOG
+  - ["@semantic-release/git",
+     { "assets": ["CHANGELOG.md"],
+       "message": "chore(release): ${nextRelease.version} [skip ci]\n\n${nextRelease.notes}" }]
