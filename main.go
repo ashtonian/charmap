@@ -20,7 +20,7 @@ var (
 	closeDelim           = flag.String("close", "::>", "closing delimiter")
 	targetDir            = flag.String("dir", ".", "directory to scan")
 	workers              = flag.Int("workers", runtime.GOMAXPROCS(0), "concurrent file processors")
-	mode                 = flag.String("mode", "env", "value source: env | flag | both")
+	mode                 = flag.String("both", "env", "value source: env | flag | both")
 	logFile              = flag.String("log", "", "log file (default no logging)")
 	inc                  = sliceFlag{`.*\.ya?ml$`}
 	ign                  = sliceFlag{`^\.git(/|$)`}
