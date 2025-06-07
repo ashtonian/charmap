@@ -6,7 +6,7 @@ charmap recursively scans every regular file beneath the chosen directory and re
 
 ## Why
 
-Better performance, easier to maintain and configure then using sed for replacements.
+Needed basic token replacement pre argo templating. Better performance, easier to maintain and configure then using sed for replacements.
 
 ## Usage
 
