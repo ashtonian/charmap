@@ -1,3 +1,5 @@
+// Command charmap replaces <::KEY::> tokens in files with values named
+// explicitly on the command line. See README.md.
 package main
 
 import (
@@ -5,352 +7,327 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io/fs"
+	"io"
 	"log/slog"
+	"math"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"runtime/debug"
 	"strings"
-	"sync"
+	"syscall"
+	"time"
+
+	"github.com/ashtonian/charmap/v2/internal/token"
+	"github.com/ashtonian/charmap/v2/internal/tree"
+	"github.com/ashtonian/charmap/v2/internal/values"
 )
 
-var (
-	openDelim            = flag.String("open", "<::", "opening delimiter")
-	closeDelim           = flag.String("close", "::>", "closing delimiter")
-	targetDir            = flag.String("dir", ".", "directory to scan")
-	workers              = flag.Int("workers", runtime.GOMAXPROCS(0), "concurrent file processors")
-	mode                 = flag.String("mode", "both", "value source: env | flag | both")
-	logFile              = flag.String("log", "", "log file (default no logging)")
-	inc                  = sliceFlag{`.*\.ya?ml$`}
-	ign                  = sliceFlag{`^\.git(/|$)`}
-	userKV     StringMap = make(StringMap)
+// version is set at build time with -ldflags "-X main.version=...".
+var version string
+
+const (
+	exitOK     = 0
+	exitFailed = 1 // token problems, I/O errors, interruption
+	exitUsage  = 2 // invalid flags or configuration
 )
 
-func init() {
-	flag.Var(&inc, "include", "regex for files to process (default: .*\\.ya?ml$)")
-	flag.Var(&ign, "ignore", "regex for files/dirs to skip (default: ^\\.git(/|$))")
-	flag.Var(&userKV, "set", "override in KEY=value form (may be repeated)")
-
-	flag.Usage = func() {
-		fmt.Fprintf(flag.CommandLine.Output(), `
-charmap scans every regular file under -dir (default ".") and replaces
-instances of %sKEY%s. Anchors are configurable with -open and -close flags.
-
-charmap can read key values from environment variables, command line flags,
-or both. Use -mode to select the source:
-  -mode env   : read from environment variables only (will read all env vars)
-  -mode flag  : read from command line flags only (faster)
-  -mode both  : read from both environment variables and command line flags
-
-Example:
-  preprocess -set PUBLIC_DOMAIN=example.com -mode=both
-
-Flags:
-`, *openDelim, *closeDelim)
-		flag.PrintDefaults()
-	}
-}
-
-type config struct {
-	OpenDelim  string
-	CloseDelim string
-	TargetDir  string
-	Workers    int
-	Mode       string
-	LogFile    string
-	CloseLog   func()
-	FileFilter *fileFilter
-	KeyMap     StringMap
-}
-
-func parseConfig() (config, error) {
-	flag.Parse()
-
-	values := make(map[string]string)
-	switch *mode {
-	case "env":
-		for _, kv := range os.Environ() {
-			if idx := strings.IndexByte(kv, '='); idx != -1 {
-				values[kv[:idx]] = kv[idx+1:]
-			}
-		}
-	case "flag":
-		for k, v := range userKV {
-			values[k] = v
-		}
-	case "both":
-		for _, kv := range os.Environ() {
-			if idx := strings.IndexByte(kv, '='); idx != -1 {
-				values[kv[:idx]] = kv[idx+1:]
-			}
-		}
-		for k, v := range userKV {
-			values[k] = v
-		}
-	default:
-		return config{}, fmt.Errorf("invalid mode %q, must be one of: env, flag, both", *mode)
-	}
-
-	if len(*openDelim) == 0 || len(*closeDelim) == 0 {
-		return config{}, fmt.Errorf("delimiters must not be empty")
-	}
-	if *workers <= 0 {
-		return config{}, fmt.Errorf("workers must be greater than 0, got %d", *workers)
-	}
-	if *targetDir == "" {
-		return config{}, fmt.Errorf("target directory must not be empty")
-	}
-	if _, err := os.Stat(*targetDir); os.IsNotExist(err) {
-		return config{}, fmt.Errorf("target directory %q does not exist", *targetDir)
-	}
-	if fi, err := os.Stat(*targetDir); err != nil || !fi.IsDir() {
-		return config{}, fmt.Errorf("target %q is not a directory", *targetDir)
-	}
-
-	fileFilter, err := newFileFilter(inc, ign)
-	if err != nil {
-		return config{}, fmt.Errorf("failed to create file filter: %w", err)
-	}
-
-	closer := func() {}
-	slog.SetDefault(slog.New(discardHandler{}))
-	if *logFile != "" {
-		f, err := os.OpenFile(*logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-		if err != nil {
-			return config{}, fmt.Errorf("failed to open log file %q: %w", *logFile, err)
-		}
-
-		closer = func() {
-			f.Close()
-		}
-
-		slog.SetDefault(slog.New(slog.NewTextHandler(f, &slog.HandlerOptions{
-			Level: slog.LevelInfo,
-		})))
-	}
-
-	cfg := config{
-		OpenDelim:  *openDelim,
-		CloseDelim: *closeDelim,
-		TargetDir:  *targetDir,
-		Workers:    *workers,
-		Mode:       *mode,
-		LogFile:    *logFile,
-		CloseLog:   closer,
-		FileFilter: fileFilter,
-		KeyMap:     values,
-	}
-	return cfg, nil
-}
+const (
+	defaultMaxFileSize = 64 << 20
+	defaultInclude     = `\.ya?ml$`
+	maxWorkers         = 1024
+)
 
 func main() {
-	cfg, err := parseConfig()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "ERROR:", err)
-		os.Exit(1)
-	}
-	defer cfg.CloseLog()
-
-	slog.Info("charmap started",
-		slog.String("dir", cfg.TargetDir),
-		slog.Int("workers", cfg.Workers),
-		slog.String("mode", cfg.Mode),
-		slog.String("open", cfg.OpenDelim),
-		slog.String("close", cfg.CloseDelim),
-		slog.String("logfile", cfg.LogFile),
-		slog.String("values", cfg.KeyMap.String()),
-		slog.String("include", inc.String()),
-		slog.String("ignore", ign.String()),
-	)
-
-	err = processFiles(cfg)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "ERROR:", err)
-		os.Exit(1)
-	}
-}
-
-func processFiles(cfg config) error {
-	files := make(chan string, cfg.Workers*2)
-	errs := []error{}
-	errLock := sync.Mutex{}
-
-	replacer := buildNewReplacer([]byte(cfg.OpenDelim), []byte(cfg.CloseDelim), cfg.KeyMap)
-
-	var wg sync.WaitGroup
-
-	for i := 0; i < cfg.Workers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for path := range files {
-				err := processFile(path, replacer)
-				if err != nil {
-					errLock.Lock()
-					errs = append(errs, fmt.Errorf("failed to process %q: %w", path, err))
-					errLock.Unlock()
-					slog.Error("error processing file", slog.String("path", path), slog.Any("error", err))
-				}
-			}
-		}()
-	}
-
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	// After the first signal, restore default handling so a second one
+	// terminates immediately, e.g. while filter is blocked reading stdin.
 	go func() {
-		err := filepath.WalkDir(cfg.TargetDir, func(p string, d fs.DirEntry, err error) error {
-			if err != nil || d.IsDir() {
-				return err
-			}
-
-			if !cfg.FileFilter.match(p) {
-				slog.Debug("skipping file", slog.String("path", p))
-				return nil
-			}
-			files <- p
-			return nil
-		})
-		if err != nil {
-			errLock.Lock()
-			errs = append(errs, fmt.Errorf("failed to walk directory %q: %w", cfg.TargetDir, err))
-			errLock.Unlock()
-		}
-		close(files)
+		<-ctx.Done()
+		stop()
 	}()
-
-	wg.Wait()
-
-	if len(errs) > 0 {
-		return errors.Join(errs...)
-	}
-	return nil
+	code := run(ctx, os.Args[1:], os.Environ(), os.Stdin, os.Stdout, os.Stderr)
+	stop()
+	os.Exit(code)
 }
 
-func processFile(path string, replacer replacer) error {
-	in, err := os.ReadFile(path)
+func run(ctx context.Context, args, environ []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
+		fmt.Fprint(stderr, usage)
+		return exitUsage
+	}
+	switch cmd, rest := args[0], args[1:]; cmd {
+	case "render", "check":
+		return runTree(ctx, cmd, rest, environ, stderr)
+	case "filter":
+		return runFilter(rest, environ, stdin, stdout, stderr)
+	case "version", "-version", "--version":
+		fmt.Fprintln(stdout, versionString())
+		return exitOK
+	case "help", "-h", "-help", "--help":
+		fmt.Fprint(stdout, usage)
+		return exitOK
+	default:
+		fmt.Fprintf(stderr, "charmap: unknown command %q\n\n%s", cmd, usage)
+		return exitUsage
+	}
+}
+
+const usage = `charmap replaces <::KEY::> tokens in files with values you name explicitly.
+
+Usage:
+  charmap render [flags]   rewrite selected files under --dir
+  charmap check  [flags]   report problems and files that would change; write nothing
+  charmap filter [flags]   render stdin to stdout
+  charmap version          print version, Go version and platform
+  charmap help             print this help
+
+Run 'charmap <command> -h' for a command's flags.
+
+Values come only from --set KEY=VALUE, --env NAME and --env-prefix PREFIX.
+Exit status: 0 success, 1 token problems or I/O errors, 2 usage errors.
+`
+
+// commonFlags are shared by every rendering command.
+type commonFlags struct {
+	open, close string
+	set, env    stringList
+	envPrefix   string
+	maxFileSize int64
+	logLevel    string
+	logFormat   string
+}
+
+func addCommonFlags(fs *flag.FlagSet) *commonFlags {
+	c := &commonFlags{}
+	fs.StringVar(&c.open, "open", token.DefaultSyntax.Open, "opening delimiter")
+	fs.StringVar(&c.close, "close", token.DefaultSyntax.Close, "closing delimiter")
+	fs.Var(&c.set, "set", "`KEY=VALUE` assignment; repeatable; splits at the first '='")
+	fs.Var(&c.env, "env", "read the environment variable `NAME` as key NAME; repeatable")
+	fs.StringVar(&c.envPrefix, "env-prefix", "", "read every environment variable starting with `PREFIX`; the key is the rest of the name")
+	fs.Int64Var(&c.maxFileSize, "max-file-size", defaultMaxFileSize, "largest file read and largest rendered output, in `bytes`")
+	fs.StringVar(&c.logLevel, "log-level", "warn", "log level: debug, info, warn or error")
+	fs.StringVar(&c.logFormat, "log-format", "text", "log format: text or json")
+	return c
+}
+
+func (c *commonFlags) logger(w io.Writer) (*slog.Logger, error) {
+	var level slog.Level
+	if err := level.UnmarshalText([]byte(c.logLevel)); err != nil {
+		return nil, fmt.Errorf("--log-level: %w", err)
+	}
+	opts := &slog.HandlerOptions{Level: level}
+	switch c.logFormat {
+	case "text":
+		return slog.New(slog.NewTextHandler(w, opts)), nil
+	case "json":
+		return slog.New(slog.NewJSONHandler(w, opts)), nil
+	default:
+		return nil, fmt.Errorf("--log-format must be text or json, got %q", c.logFormat)
+	}
+}
+
+func (c *commonFlags) engine(environ []string) (*token.Engine, error) {
+	if c.maxFileSize < 1 || c.maxFileSize > math.MaxInt {
+		return nil, fmt.Errorf("--max-file-size must be between 1 and %d, got %d", math.MaxInt, c.maxFileSize)
+	}
+	vals, err := values.Resolve(values.Sources{EnvPrefix: c.envPrefix, Env: c.env, Set: c.set}, environ)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	fi, _ := os.Stat(path)
-
-	out, changed, err := replacer(in)
-	if err != nil {
-		return fmt.Errorf("failed to process %q: %w", path, err)
-	}
-
-	if changed {
-		slog.Info("processed file", slog.String("path", path), slog.Int("size", len(out)),
-			slog.Int("original_size", len(in)), slog.Bool("changed", changed),
-		)
-		return os.WriteFile(path, out, fi.Mode())
-	}
-
-	slog.Debug("no changes made to file", slog.String("path", path))
-	return nil
+	return token.New(token.Config{
+		Syntax:    token.Syntax{Open: c.open, Close: c.close},
+		Values:    vals,
+		MaxOutput: int(c.maxFileSize),
+	})
 }
 
-type replacer func(txt []byte) ([]byte, bool, error)
-
-func buildNewReplacer(open, close []byte, values map[string]string) replacer {
-	openStr, closeStr := string(open), string(close)
-	pairs := make([]string, 0, len(values)*2)
-
-	for k, v := range values {
-		pairs = append(pairs, openStr+k+closeStr, v)
-	}
-	strReplacer := strings.NewReplacer(pairs...)
-
-	fn := func(txt []byte) ([]byte, bool, error) {
-		out := strReplacer.Replace(string(txt))
-		changed := out != string(txt)
-
-		if idx := strings.Index(out, openStr); idx != -1 {
-			start := idx + len(openStr)
-			if end := strings.Index(out[start:], closeStr); end != -1 {
-				missing := out[start : start+end]
-				return nil, false, fmt.Errorf("env/flag %q not set", missing)
-			}
-		}
-
-		return []byte(out), changed, nil
-	}
-	return fn
-}
-
-type sliceFlag []string
-
-func (s *sliceFlag) String() string     { return fmt.Sprint([]string(*s)) }
-func (s *sliceFlag) Set(v string) error { *s = append(*s, v); return nil }
-
-type fileFilter struct {
-	includes []*regexp.Regexp
-	excludes []*regexp.Regexp
-}
-
-func newFileFilter(incPat, excPat []string) (*fileFilter, error) {
-	compileAll := func(pats []string) ([]*regexp.Regexp, error) {
-		out := make([]*regexp.Regexp, 0, len(pats))
-		for _, p := range pats {
-			rx, err := regexp.Compile(p)
-			if err != nil {
-				return nil, err
-			}
-			out = append(out, rx)
-		}
-		return out, nil
-	}
-	inc, err := compileAll(incPat)
-	if err != nil {
-		return nil, fmt.Errorf("include: %w", err)
-	}
-	exc, err := compileAll(excPat)
-	if err != nil {
-		return nil, fmt.Errorf("ignore: %w", err)
-	}
-	return &fileFilter{includes: inc, excludes: exc}, nil
-}
-
-func (f *fileFilter) match(path string) bool {
-	for _, rx := range f.excludes {
-		if rx.MatchString(path) {
-			return false
-		}
-	}
-	if len(f.includes) == 0 {
-		return true
-	}
-	for _, rx := range f.includes {
-		if rx.MatchString(path) {
-			return true
-		}
-	}
-	return false
-}
-
-type StringMap map[string]string
-
-func (m *StringMap) String() string {
-	return fmt.Sprintf("%v", *m)
-}
-
-func (m *StringMap) Set(value string) error {
-	pairs := strings.Split(value, ",")
-	if *m == nil {
-		*m = make(map[string]string)
-	}
-	for _, pair := range pairs {
-		parts := strings.Split(pair, "=")
-		if len(parts) == 2 {
-			(*m)[parts[0]] = parts[1]
+func runTree(ctx context.Context, cmd string, args, environ []string, stderr io.Writer) int {
+	fs := flag.NewFlagSet("charmap "+cmd, flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	common := addCommonFlags(fs)
+	dir := fs.String("dir", ".", "directory to process")
+	var include, exclude stringList
+	fs.Var(&include, "include", "select files whose root-relative path matches `REGEXP`; repeatable; replaces the default "+defaultInclude)
+	fs.Var(&exclude, "exclude", "skip files, and prune directories, whose root-relative path matches `REGEXP`; repeatable")
+	workers := fs.Int("workers", runtime.GOMAXPROCS(0), "files processed concurrently")
+	fs.Usage = func() {
+		fmt.Fprintf(fs.Output(), "Usage: charmap %s [flags]\n\n", cmd)
+		if cmd == "render" {
+			fmt.Fprint(fs.Output(), "Rewrites every selected file under --dir. Nothing is written unless every\nfile renders without a problem.\n\n")
 		} else {
-			return fmt.Errorf("invalid key=value pair %q, expected format KEY=VALUE", pair)
+			fmt.Fprint(fs.Output(), "Reports every problem and each file that would change. Writes nothing.\n\n")
 		}
+		fs.PrintDefaults()
 	}
-	return nil
+	if code, ok := parse(fs, args, stderr); !ok {
+		return code
+	}
+	if *workers < 1 || *workers > maxWorkers {
+		return usageError(stderr, cmd, fmt.Errorf("--workers must be between 1 and %d, got %d", maxWorkers, *workers))
+	}
+	if len(include) == 0 {
+		include = stringList{defaultInclude}
+	}
+	includeRE, err := compileAll("--include", include)
+	if err != nil {
+		return usageError(stderr, cmd, err)
+	}
+	excludeRE, err := compileAll("--exclude", exclude)
+	if err != nil {
+		return usageError(stderr, cmd, err)
+	}
+	log, err := common.logger(stderr)
+	if err != nil {
+		return usageError(stderr, cmd, err)
+	}
+	engine, err := common.engine(environ)
+	if err != nil {
+		return usageError(stderr, cmd, err)
+	}
+
+	opts := tree.Options{
+		Include:     includeRE,
+		Exclude:     excludeRE,
+		Workers:     *workers,
+		MaxFileSize: common.maxFileSize,
+		Logger:      log,
+	}
+	start := time.Now()
+	var report tree.Report
+	if cmd == "render" {
+		report, err = tree.Apply(ctx, *dir, engine, opts)
+	} else {
+		report, err = tree.Check(ctx, *dir, engine, opts)
+	}
+
+	for _, p := range report.Problems {
+		fmt.Fprintf(stderr, "%s:%d:%d: %s\n", filepath.Join(*dir, filepath.FromSlash(p.Path)), p.Line, p.Column, p.Message(engine.Syntax()))
+	}
+	if report.Truncated {
+		fmt.Fprintf(stderr, "charmap %s: a file has more than %d problems; the rest are not shown\n", cmd, token.MaxProblems)
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "charmap %s: %v\n", cmd, err)
+	}
+	log.Info(cmd+" finished",
+		slog.String("dir", *dir),
+		slog.Int("files", report.Files),
+		slog.Int("changed", len(report.Changed)),
+		slog.Int("problems", len(report.Problems)),
+		slog.Duration("elapsed", time.Since(start)),
+	)
+	if err != nil || len(report.Problems) > 0 {
+		return exitFailed
+	}
+	return exitOK
 }
 
-type discardHandler struct{}
+func runFilter(args, environ []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("charmap filter", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	common := addCommonFlags(fs)
+	fs.Usage = func() {
+		fmt.Fprint(fs.Output(), "Usage: charmap filter [flags] < in > out\n\nRenders stdin to stdout. Nothing is written to stdout unless the whole\ninput renders without a problem.\n\n")
+		fs.PrintDefaults()
+	}
+	if code, ok := parse(fs, args, stderr); !ok {
+		return code
+	}
+	if _, err := common.logger(stderr); err != nil {
+		return usageError(stderr, "filter", err)
+	}
+	engine, err := common.engine(environ)
+	if err != nil {
+		return usageError(stderr, "filter", err)
+	}
 
-func (discardHandler) Enabled(context.Context, slog.Level) bool  { return false }
-func (discardHandler) Handle(context.Context, slog.Record) error { return nil }
-func (discardHandler) WithAttrs(_ []slog.Attr) slog.Handler      { return discardHandler{} }
-func (discardHandler) WithGroup(_ string) slog.Handler           { return discardHandler{} }
+	data, err := io.ReadAll(io.LimitReader(stdin, common.maxFileSize+1))
+	if err != nil {
+		fmt.Fprintf(stderr, "charmap filter: read stdin: %v\n", err)
+		return exitFailed
+	}
+	if int64(len(data)) > common.maxFileSize {
+		fmt.Fprintf(stderr, "charmap filter: stdin is over the %d byte limit\n", common.maxFileSize)
+		return exitFailed
+	}
+	res := engine.Render(data)
+	for _, p := range res.Problems {
+		fmt.Fprintf(stderr, "<stdin>:%d:%d: %s\n", p.Line, p.Column, p.Message(engine.Syntax()))
+	}
+	if res.Truncated {
+		fmt.Fprintf(stderr, "charmap filter: more than %d problems; the rest are not shown\n", token.MaxProblems)
+	}
+	if len(res.Problems) > 0 {
+		return exitFailed
+	}
+	if _, err := stdout.Write(res.Output); err != nil {
+		fmt.Fprintf(stderr, "charmap filter: write stdout: %v\n", err)
+		return exitFailed
+	}
+	return exitOK
+}
+
+// parse parses args and rejects positional arguments, which the flag package
+// would otherwise stop at, silently ignoring every flag after them.
+func parse(fs *flag.FlagSet, args []string, stderr io.Writer) (code int, ok bool) {
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return exitOK, false
+		}
+		return exitUsage, false
+	}
+	if fs.NArg() > 0 {
+		// The argument is not echoed: it may be a value meant for a flag.
+		fmt.Fprintf(stderr, "%s: %d unexpected positional argument(s); every option is a flag, e.g. --dir\n", fs.Name(), fs.NArg())
+		return exitUsage, false
+	}
+	return exitOK, true
+}
+
+func usageError(stderr io.Writer, cmd string, err error) int {
+	fmt.Fprintf(stderr, "charmap %s: %v\n", cmd, err)
+	return exitUsage
+}
+
+func compileAll(flagName string, patterns []string) ([]*regexp.Regexp, error) {
+	out := make([]*regexp.Regexp, 0, len(patterns))
+	for _, p := range patterns {
+		re, err := regexp.Compile(p)
+		if err != nil {
+			return nil, fmt.Errorf("%s %q: %w", flagName, p, err)
+		}
+		out = append(out, re)
+	}
+	return out, nil
+}
+
+func versionString() string {
+	v, rev := version, ""
+	if info, ok := debug.ReadBuildInfo(); ok {
+		if v == "" {
+			v = info.Main.Version
+		}
+		for _, s := range info.Settings {
+			if s.Key == "vcs.revision" {
+				rev = " " + s.Value[:min(12, len(s.Value))]
+			}
+		}
+	}
+	if v == "" {
+		v = "(devel)"
+	}
+	return fmt.Sprintf("charmap %s%s %s %s/%s", v, rev, runtime.Version(), runtime.GOOS, runtime.GOARCH)
+}
+
+// stringList is a repeatable string flag.
+type stringList []string
+
+func (l *stringList) String() string { return strings.Join(*l, ",") }
+
+func (l *stringList) Set(v string) error {
+	*l = append(*l, v)
+	return nil
+}
