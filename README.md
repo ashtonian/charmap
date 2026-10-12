@@ -1,5 +1,10 @@
 # charmap
 
+[![Release](https://github.com/ashtonian/charmap/actions/workflows/release.yaml/badge.svg?branch=main)](https://github.com/ashtonian/charmap/actions/workflows/release.yaml)
+[![GitHub release](https://img.shields.io/github/v/release/ashtonian/charmap)](https://github.com/ashtonian/charmap/releases/latest)
+[![Docker pulls](https://img.shields.io/docker/pulls/ashtonian/charmap)](https://hub.docker.com/r/ashtonian/charmap)
+[![Go Reference](https://pkg.go.dev/badge/github.com/ashtonian/charmap/v2.svg)](https://pkg.go.dev/github.com/ashtonian/charmap/v2)
+
 charmap replaces `<::KEY::>` tokens in files with values you name explicitly
 on the command line. It is built to run as a preprocessor in a GitOps
 rendering path, for example in an Argo CD Config Management Plugin before
@@ -221,6 +226,11 @@ FROM ghcr.io/crumbhole/argocd-lovely-plugin-cmp:1.2.2@sha256:<digest>
 COPY --from=docker.io/ashtonian/charmap:2.0.0@sha256:<digest> /usr/local/bin/charmap /usr/local/bin/charmap
 ```
 
+[argo-fleet](https://github.com/ashtonian/argo-fleet) is a complete example:
+a fleet of Argo CD instances whose cluster identity charmap substitutes
+through argocd-lovely-plugin, with CI that renders every Application inside
+the plugin image and installs the whole fleet into a kind cluster.
+
 The `generate` command must stop when charmap fails. Without `set -e` a shell
 carries on to the renderer, which then emits the unreplaced tokens and the
 plugin reports success:
@@ -321,6 +331,9 @@ runs lint, govulncheck, actionlint, shellcheck and the smoke test. It also
 builds the image for both platforms and checks with `scripts/verify-image.sh`
 that each platform runs a binary built for it.
 
+**Docker Hub description** (`.github/workflows/dockerhub-description.yaml`)
+copies this README to the Docker Hub page whenever it changes on `main`.
+
 **Releases** (`.github/workflows/release.yaml`) run on every push to `main`.
 Versions follow [Conventional Commits](https://www.conventionalcommits.org/):
 `fix:` releases a patch, `feat:` a minor version, and a `BREAKING CHANGE:`
@@ -342,7 +355,7 @@ re-run produces the same version. It needs the `DOCKERHUB_USERNAME` and
 | `scripts/smoke.sh` | End-to-end checks of the built binary. |
 | `scripts/verify-image.sh` | Checks each platform of an image runs a binary for that platform. |
 | `Dockerfile` | Cross-compiled multi-platform build onto distroless static. |
-| `.github/workflows/` | CI and release. |
+| `.github/workflows/` | CI, release and the Docker Hub description. |
 | `.releaserc.yaml` | semantic-release configuration. |
 
 ## License

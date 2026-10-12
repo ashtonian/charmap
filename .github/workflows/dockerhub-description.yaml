@@ -1,0 +1,33 @@
+name: Docker Hub description
+
+# Copies README.md to the Docker Hub repository page when it changes on main,
+# so the image's page documents the version people pull.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - README.md
+      - .github/workflows/dockerhub-description.yaml
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: peter-evans/dockerhub-description@1b9a80c056b620d92cedb9d9b5a223409c68ddfa # v5.0.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ashtonian/charmap
+          # Docker Hub limits the short description to 100 characters.
+          short-description: Replace <::KEY::> tokens in files with explicitly named values. All or nothing, for GitOps.
+          enable-url-completion: true
