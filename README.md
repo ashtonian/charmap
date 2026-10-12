@@ -33,6 +33,7 @@ What it guarantees:
 
 - [Install](#install)
 - [Commands](#commands)
+- [Examples](#examples)
 - [Token syntax](#token-syntax)
 - [Values](#values)
 - [Configuration](#configuration)
@@ -40,6 +41,7 @@ What it guarantees:
 - [Exit status, diagnostics and logs](#exit-status-diagnostics-and-logs)
 - [Argo CD Config Management Plugin](#argo-cd-config-management-plugin)
 - [Security](#security)
+- [When to use something else](#when-to-use-something-else)
 - [Troubleshooting](#troubleshooting)
 - [Development](#development)
 - [Code map](#code-map)
@@ -52,8 +54,13 @@ What it guarantees:
 nonroot; it has no shell. Pin it by digest in production.
 
 ```sh
-docker run --rm -v "$PWD:/work" docker.io/ashtonian/charmap:2 render --set GROUP=us-east
+docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/work" \
+  docker.io/ashtonian/charmap:2 render --set GROUP=us-east
 ```
+
+`--user` runs charmap as the owner of the files: it writes each changed file
+as a new file in the same directory, which needs write access to that
+directory, and it keeps the file's owner.
 
 To use charmap inside another image, copy the binary:
 
@@ -70,6 +77,11 @@ go install github.com/ashtonian/charmap/v2@latest
 `charmap version` prints the version, Go version and the platform the binary
 was built for.
 
+Upgrading from 1.x: v2 changed the command line and stopped reading the
+environment implicitly. The [v2.0.0 release
+notes](https://github.com/ashtonian/charmap/releases/tag/v2.0.0) list every
+change.
+
 ## Commands
 
 | Command | What it does |
@@ -83,6 +95,43 @@ was built for.
 Every option is a flag; positional arguments are rejected. Go's flag parser
 stops at the first positional argument, so accepting them would silently
 ignore every flag after one.
+
+## Examples
+
+Fail a CI job when a template references a value it does not have, without
+changing any file:
+
+```sh
+charmap check --dir manifests --set GROUP=us-east --set CLUSTER_NAME=ci
+```
+
+Substitute into rendered output instead of the source files:
+
+```sh
+kustomize build overlays/prod | charmap filter --env GROUP --env CLUSTER_NAME | kubectl apply -f -
+```
+
+Use every key of a Kubernetes Secret as a value. Load it into the container
+with a prefix, then select that prefix:
+
+```yaml
+envFrom:
+  - prefix: FLEET_
+    secretRef:
+      name: cluster-identity   # key REGION becomes FLEET_REGION, token <::REGION::>
+```
+
+```sh
+charmap render --env-prefix FLEET_
+```
+
+Process JSON as well as YAML, skip a vendored directory, and use other
+delimiters:
+
+```sh
+charmap render --include '\.ya?ml$' --include '\.json$' --exclude '^vendor/' \
+  --open '%%' --close '%%' --env GROUP
+```
 
 ## Token syntax
 
@@ -222,8 +271,9 @@ Build the sidecar image with charmap baked in, rather than copying the binary
 in at pod start:
 
 ```dockerfile
-FROM ghcr.io/crumbhole/argocd-lovely-plugin-cmp:1.2.2@sha256:<digest>
-COPY --from=docker.io/ashtonian/charmap:2.0.0@sha256:<digest> /usr/local/bin/charmap /usr/local/bin/charmap
+FROM docker.io/ashtonian/charmap:2.0.0@sha256:74df476a9a2dd40e46c550935da25e76bbc75e308b383e03061c91c23a6bdabc AS charmap
+FROM ghcr.io/crumbhole/argocd-lovely-plugin-cmp:v2.0.0@sha256:7fb7711233d2aa76505bca5930b056bce6f4d0c18a2d905af98d10ee0094e894
+COPY --from=charmap /usr/local/bin/charmap /usr/local/bin/charmap
 ```
 
 [argo-fleet](https://github.com/ashtonian/argo-fleet) is a complete example:
@@ -243,10 +293,12 @@ metadata:
 spec:
   version: v1.0
   generate:
-    command: [sh, -c]
+    command: [bash, -c]
     args:
       - |
-        set -eu
+        set -euo pipefail
+        # Applications must not configure the pipeline (see below).
+        while IFS= read -r name; do unset "$name"; done < <(compgen -e | grep '^ARGOCD_ENV_' || true)
         : "${GROUP:?}" "${CLUSTER_NAME:?}"
         charmap render --env GROUP --env CLUSTER_NAME
         exec argocd-lovely-plugin
@@ -254,6 +306,10 @@ spec:
 
 Where the values come from:
 
+- **A Secret, every key** (`envFrom` with a `prefix` on the sidecar
+  container): read them with `--env-prefix`, as in [Examples](#examples).
+  Adding a value is then adding a key to the Secret. argo-fleet works this
+  way.
 - **Sidecar environment** (for example `env` with `secretKeyRef` on the
   sidecar container): read them with `--env NAME`. Argo CD's manifest cache
   key does not include the sidecar's environment. After changing a value,
@@ -261,7 +317,13 @@ Where the values come from:
   wait for the next commit.
 - **The Application spec** (`spec.source.plugin.env`): Argo CD passes each
   entry as `ARGOCD_ENV_<NAME>`, so use `--env-prefix ARGOCD_ENV_`. These values
-  are part of the cache key, so a change re-renders.
+  are part of the cache key, so a change re-renders. With argocd-lovely-plugin,
+  note that it reads its own settings from the same variables, including
+  commands to run (`ARGOCD_ENV_LOVELY_PREPROCESSORS`): anyone who can edit an
+  Application can run commands in the sidecar. If Applications should not
+  configure the plugin, read identity from the sidecar instead and drop
+  Application-supplied variables before running lovely, as the example's
+  first line does.
 
 The generate command runs in the Application's source directory and charmap
 processes `--dir .` by default. Tokens in files outside it, such as Kustomize
@@ -293,6 +355,19 @@ it on every render.
 - **Image.** Distroless static base, nonroot user, no shell or package
   manager. Releases publish SBOM and provenance attestations.
 
+## When to use something else
+
+- **Structured values** (lists, maps, values that need YAML or JSON
+  escaping): Helm values or Kustomize `replacements` place data in specific
+  fields, which string substitution cannot do safely.
+- **Lenient substitution** where a missing variable should become empty:
+  `envsubst` does that; charmap treats it as an error by design.
+- **Per-cluster patches** that change structure: Kustomize overlays.
+
+charmap fits when plain string values must be filled into many files before
+rendering, from a source you name, and a missing or malformed token must
+stop the pipeline.
+
 ## Troubleshooting
 
 | Symptom | Check | Then |
@@ -305,6 +380,7 @@ it on every render.
 | `file is N bytes, over the M byte limit` | Is the file meant to be processed? | Exclude it, or raise `--max-file-size`. |
 | `file changed during the run; not overwritten` | Is something else writing the tree? | Stop the other writer and run again. Nothing was written for that file. |
 | `preserve owner U:G: operation not permitted` | Does the file belong to another user? | Run as the file's owner or as root, or change the file's owner first. |
+| `create temporary file: … permission denied` | Can the running user write to the file's directory? In Docker, the image runs as UID 65532. | Run as the files' owner, e.g. `docker run --user "$(id -u):$(id -g)" …`. |
 | `exec format error` when running charmap | `charmap version` on a working host prints the platform it was built for. | Use a v2 image. v1.0.2's arm64 image contained an amd64 binary. |
 | `unexpected positional argument(s)` | A flag is missing its `--` or a value has a space. | Every option is a flag, for example `--dir manifests`. |
 
