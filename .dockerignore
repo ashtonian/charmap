@@ -1,0 +1,8 @@
+# Only what the build needs; everything else stays out of the context.
+*
+!go.mod
+!go.sum
+!*.go
+!internal/
+**/*_test.go
+**/testdata
