@@ -27,7 +27,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ashtonian/go-ci-actions@853832a13eec9e84695a009516a948fca3ce0e9d # v1.0.0
+      - uses: ashtonian/go-ci-actions@470279e1ff775269324ca13b0aaaf7211951215e # v1.0.1
         with:
           workload: ${{ toJSON(matrix) }}
           go-version: ${{ matrix.go }}
@@ -45,7 +45,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ashtonian/go-ci-actions@853832a13eec9e84695a009516a948fca3ce0e9d # v1.0.0
+      - uses: ashtonian/go-ci-actions@470279e1ff775269324ca13b0aaaf7211951215e # v1.0.1
         with:
           go-version: "1.27.x"
           check-latest: "true"
