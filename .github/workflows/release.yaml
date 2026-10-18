@@ -30,7 +30,8 @@ jobs:
 
   plan:
     needs: ci
-    runs-on: ubuntu-latest
+    if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository))
+    runs-on: arc-charmap
     timeout-minutes: 10
     permissions:
       # semantic-release verifies push access even in dry-run mode.
@@ -54,8 +55,8 @@ jobs:
 
   image:
     needs: plan
-    if: needs.plan.outputs.version != ''
-    runs-on: ubuntu-latest
+    if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository)) && (needs.plan.outputs.version != '')
+    runs-on: arc-charmap
     timeout-minutes: 30
     permissions:
       contents: read
@@ -69,10 +70,30 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Restore Docker Go caches
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .build-cache
+          key: docker-go-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Dockerfile', 'go.mod', 'go.sum') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            docker-go-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Dockerfile', 'go.mod', 'go.sum') }}-
+            docker-go-v1-${{ runner.os }}-${{ runner.arch }}-
+      - name: Restore BuildKit Go caches
+        uses: reproducible-containers/buildkit-cache-dance@5422eac04292c961a382e0f584ea0f03ad9da723 # v3.4.0
+        with:
+          scratch-dir: ${{ runner.temp }}/buildkit-cache-dance
+          cache-map: |
+            {
+              ".build-cache/go-build": "/root/.cache/go-build",
+              ".build-cache/go-mod": "/go/pkg/mod"
+            }
+
       - id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
+          cache-from: type=gha,scope=charmap
+          cache-to: type=gha,mode=max,scope=charmap
           platforms: linux/amd64,linux/arm64
           push: true
           provenance: mode=max
@@ -92,7 +113,8 @@ jobs:
 
   release:
     needs: [plan, image]
-    runs-on: ubuntu-latest
+    if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository))
+    runs-on: arc-charmap
     timeout-minutes: 15
     permissions:
       contents: write # tag and GitHub release

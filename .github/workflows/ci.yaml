@@ -20,29 +20,34 @@ jobs:
       matrix:
         go: ["1.26.x", "1.27.x"]
         os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+    if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository))
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && 'arc-charmap' || matrix.os }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - uses: ./.github/actions/setup-go-cache
         with:
+          workload: ${{ toJSON(matrix) }}
           go-version: ${{ matrix.go }}
       - run: go vet ./...
       - run: go test -race -count=1 ./...
       - if: matrix.os == 'ubuntu-latest' && matrix.go == '1.27.x'
         run: go test -run '^$' -fuzz FuzzRender -fuzztime 60s ./internal/token
       - run: scripts/smoke.sh
+      - name: Trim Go build cache
+        uses: ./.github/actions/trim-go-cache
 
   lint:
-    runs-on: ubuntu-latest
+    if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository))
+    runs-on: arc-charmap
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - uses: ./.github/actions/setup-go-cache
         with:
           go-version: "1.27.x"
       - uses: golangci/golangci-lint-action@d583c34f0599d37dbac4a198b9c83201be380893 # v9.3.0
@@ -54,11 +59,14 @@ jobs:
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
       - name: shellcheck
         run: shellcheck scripts/*.sh
+      - name: Trim Go build cache
+        uses: ./.github/actions/trim-go-cache
 
   # Builds the image for every platform and checks each one runs a binary for
   # its own architecture, by pushing to a throwaway local registry.
   image:
-    runs-on: ubuntu-latest
+    if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository))
+    runs-on: arc-charmap
     timeout-minutes: 30
     services:
       registry:
@@ -73,10 +81,30 @@ jobs:
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
         with:
           driver-opts: network=host
+      - name: Restore Docker Go caches
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .build-cache
+          key: docker-go-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Dockerfile', 'go.mod', 'go.sum') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            docker-go-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Dockerfile', 'go.mod', 'go.sum') }}-
+            docker-go-v1-${{ runner.os }}-${{ runner.arch }}-
+      - name: Restore BuildKit Go caches
+        uses: reproducible-containers/buildkit-cache-dance@5422eac04292c961a382e0f584ea0f03ad9da723 # v3.4.0
+        with:
+          scratch-dir: ${{ runner.temp }}/buildkit-cache-dance
+          cache-map: |
+            {
+              ".build-cache/go-build": "/root/.cache/go-build",
+              ".build-cache/go-mod": "/go/pkg/mod"
+            }
+
       - id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
+          cache-from: type=gha,scope=charmap
+          cache-to: type=gha,mode=max,scope=charmap
           platforms: linux/amd64,linux/arm64
           push: true
           tags: localhost:5000/charmap:ci

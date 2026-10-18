@@ -6,3 +6,5 @@
 !internal/
 **/*_test.go
 **/testdata
+
+.build-cache/
