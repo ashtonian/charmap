@@ -10,7 +10,8 @@ on:
     branches: [main]
   workflow_dispatch:
 
-permissions: {}
+permissions:
+  id-token: write
 
 # One release at a time. A queued run waits rather than cancelling one that
 # may already have pushed an image.
@@ -19,6 +20,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  DOCKER_BUILD_RECORD_UPLOAD: "false"
+  CI_ARTIFACT_ENDPOINT: ${{ vars.CI_ARTIFACT_ENDPOINT }}
   IMAGE: docker.io/ashtonian/charmap
   SEMANTIC_RELEASE_VERSION: 25.0.9
 
@@ -35,6 +38,7 @@ jobs:
     runs-on: arc-charmap
     timeout-minutes: 10
     permissions:
+      id-token: write
       # semantic-release verifies push access even in dry-run mode.
       contents: write
     outputs:
@@ -60,6 +64,7 @@ jobs:
     runs-on: arc-charmap
     timeout-minutes: 30
     permissions:
+      id-token: write
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -106,6 +111,13 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.version=${{ needs.plan.outputs.version }}
             org.opencontainers.image.licenses=GPL-3.0-only
+      - name: Preserve Docker build record
+        if: always() && (steps.build.outcome == 'success' || steps.build.outcome == 'failure')
+        timeout-minutes: 5
+        uses: ashtonian/go-ci-actions/build-record@b9663a3e11da9a4d13f7832ed02e8e057ad9d70e # v1.4.0
+        with:
+          metadata: ${{ steps.build.outputs.metadata }}
+
       - name: Verify every platform
         env:
           VERIFY_WITH_BUILDKIT: "true"
@@ -118,6 +130,7 @@ jobs:
     runs-on: arc-charmap
     timeout-minutes: 15
     permissions:
+      id-token: write
       contents: write # tag and GitHub release
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

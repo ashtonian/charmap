@@ -1,3 +1,7 @@
+env:
+  DOCKER_BUILD_RECORD_UPLOAD: "false"
+  CI_ARTIFACT_ENDPOINT: ${{ vars.CI_ARTIFACT_ENDPOINT }}
+
 name: CI
 
 on:
@@ -6,6 +10,7 @@ on:
   workflow_call:
 
 permissions:
+  id-token: write
   contents: read
 
 concurrency:
@@ -109,6 +114,13 @@ jobs:
           tags: localhost:5000/charmap:ci
           build-args: VERSION=ci-${{ github.sha }}
       # Verified by digest, exactly as the release workflow does.
+      - name: Preserve Docker build record
+        if: always() && (steps.build.outcome == 'success' || steps.build.outcome == 'failure')
+        timeout-minutes: 5
+        uses: ashtonian/go-ci-actions/build-record@b9663a3e11da9a4d13f7832ed02e8e057ad9d70e # v1.4.0
+        with:
+          metadata: ${{ steps.build.outputs.metadata }}
+
       - env:
           VERIFY_WITH_BUILDKIT: "true"
           REF: localhost:5000/charmap@${{ steps.build.outputs.digest }}
