@@ -35,7 +35,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ashtonian/go-ci-actions@78710c0215622d4dd362f4c565de788934051488 # v1.1.0
+      - uses: ashtonian/go-ci-actions@fd722a57af04549dc44eeb876c53c72da97d7faf # v1.5.0
         with:
           workload: ${{ toJSON(matrix) }}
           go-version: ${{ matrix.go }}
@@ -56,13 +56,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ashtonian/go-ci-actions@78710c0215622d4dd362f4c565de788934051488 # v1.1.0
+      - uses: ashtonian/go-ci-actions@fd722a57af04549dc44eeb876c53c72da97d7faf # v1.5.0
         with:
           go-version: "1.27.x"
           check-latest: "true"
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
-          version: v2.14.0
+          version: v2.15.0
       - name: govulncheck
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
       - name: actionlint
@@ -117,7 +117,7 @@ jobs:
       - name: Preserve Docker build record
         if: always() && (steps.build.outcome == 'success' || steps.build.outcome == 'failure')
         timeout-minutes: 5
-        uses: ashtonian/go-ci-actions/build-record@b9663a3e11da9a4d13f7832ed02e8e057ad9d70e # v1.4.0
+        uses: ashtonian/go-ci-actions/build-record@fd722a57af04549dc44eeb876c53c72da97d7faf # v1.5.0
         with:
           metadata: ${{ steps.build.outputs.metadata }}
 
