@@ -114,7 +114,7 @@ jobs:
       - name: Preserve Docker build record
         if: always() && (steps.build.outcome == 'success' || steps.build.outcome == 'failure')
         timeout-minutes: 5
-        uses: ashtonian/go-ci-actions/build-record@b9663a3e11da9a4d13f7832ed02e8e057ad9d70e # v1.4.0
+        uses: ashtonian/go-ci-actions/build-record@fd722a57af04549dc44eeb876c53c72da97d7faf # v1.5.0
         with:
           metadata: ${{ steps.build.outputs.metadata }}
 
