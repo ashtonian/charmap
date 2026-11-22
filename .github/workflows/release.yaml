@@ -28,6 +28,8 @@ env:
 jobs:
   ci:
     uses: ./.github/workflows/ci.yaml
+    secrets:
+      CI_ARTIFACT_ENDPOINT: ${{ secrets.CI_ARTIFACT_ENDPOINT }}
     permissions:
       id-token: write
       contents: read
