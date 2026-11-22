@@ -40,11 +40,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ashtonian/go-ci-actions@fd722a57af04549dc44eeb876c53c72da97d7faf # v1.5.0
+      - uses: ashtonian/go-ci-actions@4425a5fdd39bd4f2fba5be7ee71314b145a6e591 # v1.8.0 candidate (go-ci-actions#18)
         with:
           workload: ${{ toJSON(matrix) }}
           go-version: ${{ matrix.go }}
-          check-latest: "true"
       - run: go vet ./...
       - run: go test -race -count=1 ./...
       - if: matrix.os == 'ubuntu-latest' && matrix.go == '1.27.x'
@@ -61,10 +60,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ashtonian/go-ci-actions@fd722a57af04549dc44eeb876c53c72da97d7faf # v1.5.0
+      - uses: ashtonian/go-ci-actions@4425a5fdd39bd4f2fba5be7ee71314b145a6e591 # v1.8.0 candidate (go-ci-actions#18)
         with:
           go-version: "1.27.x"
-          check-latest: "true"
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           version: v2.15.0
@@ -74,10 +72,16 @@ jobs:
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
       - name: shellcheck
         run: shellcheck scripts/*.sh
+  # Releases build and verify both platforms with the same action
+  # (release.yaml), so pull requests build linux/amd64 only, without
+  # attestations.
   image:
-    if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository))
+    if: github.event_name == 'pull_request' && github.actor_id == '4212452' && github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: read
+      id-token: write
     runs-on: arc-charmap
-    timeout-minutes: 30
+    timeout-minutes: 15
     services:
       registry:
         image: registry:3.1.2@sha256:ddf754342cfc8acc51a56d5d0ab6af06826461864460636d8bd5c546dab2a7b8
@@ -87,46 +91,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: ./.github/actions/image
         with:
-          driver-opts: network=host
-      - name: Restore Docker Go caches
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: .build-cache
-          key: docker-go-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Dockerfile', 'go.mod', 'go.sum') }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: |
-            docker-go-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Dockerfile', 'go.mod', 'go.sum') }}-
-            docker-go-v1-${{ runner.os }}-${{ runner.arch }}-
-      - name: Restore BuildKit Go caches
-        uses: reproducible-containers/buildkit-cache-dance@5422eac04292c961a382e0f584ea0f03ad9da723 # v3.4.0
-        with:
-          scratch-dir: ${{ runner.temp }}/buildkit-cache-dance
-          cache-map: |
-            {
-              ".build-cache/go-build": "/root/.cache/go-build",
-              ".build-cache/go-mod": "/go/pkg/mod"
-            }
-
-      - id: build
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        with:
-          context: .
-          cache-from: type=gha,scope=charmap
-          cache-to: type=gha,mode=max,scope=charmap
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: localhost:5000/charmap:ci
-          build-args: VERSION=ci-${{ github.sha }}
-      # Verified by digest, exactly as the release workflow does.
-      - name: Preserve Docker build record
-        if: always() && (steps.build.outcome == 'success' || steps.build.outcome == 'failure')
-        timeout-minutes: 5
-        uses: ashtonian/go-ci-actions/build-record@fd722a57af04549dc44eeb876c53c72da97d7faf # v1.5.0
-        with:
-          metadata: ${{ steps.build.outputs.metadata }}
-
-      - env:
-          VERIFY_WITH_BUILDKIT: "true"
-          REF: localhost:5000/charmap@${{ steps.build.outputs.digest }}
-        run: scripts/verify-image.sh "$REF"
+          platforms: linux/amd64
+          version: ci-${{ github.sha }}
+          image: localhost:5000/charmap
+          tag: ci

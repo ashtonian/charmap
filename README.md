@@ -393,8 +393,14 @@ go test -run '^$' -bench . -benchmem ./internal/...           # benchmarks
 golangci-lint run ./...
 go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 scripts/smoke.sh                                              # builds and exercises the binary
-docker buildx build --platform linux/amd64,linux/arm64 -t charmap:dev .
+scripts/build-binaries.sh build/image dev linux/amd64 linux/arm64  # cross-compiles the image's binaries
+docker buildx build --platform linux/amd64,linux/arm64 -f Dockerfile -t charmap:dev build/image
 ```
+
+The image holds a binary cross-compiled on the build host: its build context
+is `build/image`, with one binary per platform at `<os>/<arch>/charmap`, and
+nothing compiles or runs inside the image build. The Go that builds it is the
+`toolchain` line of `go.mod`.
 
 `FuzzRender` checks the scanner against an independent regular-expression
 implementation on every input it accepts. The `internal/tree` tests run
@@ -403,9 +409,10 @@ links, FIFOs, pruning, size limits, concurrent modification and cancellation.
 
 **CI** (`.github/workflows/ci.yaml`) runs on pull requests and before every
 release. It tests on Linux and macOS with the two supported Go versions,
-runs lint, govulncheck, actionlint, shellcheck and the smoke test. It also
-builds the image for both platforms and checks with `scripts/verify-image.sh`
-that each platform runs a binary built for it.
+runs lint, govulncheck, actionlint, shellcheck and the smoke test. On a pull
+request it also builds the linux/amd64 image, without attestations, with the
+same action a release uses (`.github/actions/image`), and checks with
+`scripts/verify-image.sh` that it runs a binary built for its platform.
 
 **Docker Hub description** (`.github/workflows/dockerhub-description.yaml`)
 copies this README to the Docker Hub page whenever it changes on `main`.
@@ -414,8 +421,9 @@ copies this README to the Docker Hub page whenever it changes on `main`.
 Versions follow [Conventional Commits](https://www.conventionalcommits.org/):
 `fix:` releases a patch, `feat:` a minor version, and a `BREAKING CHANGE:`
 footer or `!` a major version. Other commit types do not release. The workflow
-works out the next version, builds, pushes and verifies the image under that
-version, and only then creates the Git tag and GitHub release and moves the
+runs CI, works out the next version, builds both platforms' binaries on the
+runner, builds, pushes and verifies the image under that version with provenance and
+an SBOM, and only then creates the Git tag and GitHub release and moves the
 `latest`, major and minor image tags. If any step fails, no tag exists and a
 re-run produces the same version. It needs the `DOCKERHUB_USERNAME` and
 `DOCKERHUB_TOKEN` repository secrets.
@@ -429,8 +437,10 @@ re-run produces the same version. It needs the `DOCKERHUB_USERNAME` and
 | `internal/values` | Builds the value map from `--set`, `--env` and `--env-prefix`. |
 | `internal/tree` | Walks `--dir`, reads files safely, renders them with a bounded worker pool, stages output and commits it by rename. |
 | `scripts/smoke.sh` | End-to-end checks of the built binary. |
+| `scripts/build-binaries.sh` | Cross-compiles the image's binaries into the per-platform context layout. |
 | `scripts/verify-image.sh` | Checks each platform of an image runs a binary for that platform. |
-| `Dockerfile` | Cross-compiled multi-platform build onto distroless static. |
+| `Dockerfile` | Copies a platform's pre-built binary onto distroless static. |
+| `.github/actions/image/` | Builds the binaries and the image, records the build and verifies it; used by CI and release. |
 | `.github/workflows/` | CI, release and the Docker Hub description. |
 | `.releaserc.yaml` | semantic-release configuration. |
 

@@ -1,0 +1,71 @@
+name: Build the charmap image
+description: >-
+  Cross-compile charmap on the runner (go-ci-actions, with the runner's remote
+  build cache) and build the image from those binaries, then check that every
+  platform runs a binary built for it. Pull requests and releases share it, so
+  a pull request exercises the release build with fewer platforms.
+inputs:
+  platforms:
+    description: Comma-separated platforms, e.g. linux/amd64,linux/arm64.
+    required: true
+  version:
+    description: Version the binary reports.
+    required: true
+  image:
+    description: Image repository to push to, e.g. docker.io/ashtonian/charmap.
+    required: true
+  tag:
+    description: Tag to push.
+    required: true
+  labels:
+    description: OCI labels, one per line.
+    default: ""
+  attestations:
+    description: "true adds a max-mode provenance attestation and an SBOM."
+    default: "false"
+outputs:
+  digest:
+    description: Digest of the pushed image index.
+    value: ${{ steps.build.outputs.digest }}
+runs:
+  using: composite
+  steps:
+    - uses: ashtonian/go-ci-actions@4425a5fdd39bd4f2fba5be7ee71314b145a6e591 # v1.8.0 candidate (go-ci-actions#18)
+      with:
+        go-version-file: go.mod
+    - name: Cross-compile the binaries
+      shell: bash
+      env:
+        PLATFORMS: ${{ inputs.platforms }}
+        VERSION: ${{ inputs.version }}
+      run: |
+        IFS=, read -r -a platforms <<<"$PLATFORMS"
+        scripts/build-binaries.sh "$RUNNER_TEMP/image" "$VERSION" "${platforms[@]}"
+    # The local registry service of the pull request job is on the host network.
+    - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      with:
+        driver-opts: network=host
+    - id: build
+      uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+      with:
+        context: ${{ runner.temp }}/image
+        file: Dockerfile
+        platforms: ${{ inputs.platforms }}
+        push: true
+        tags: ${{ inputs.image }}:${{ inputs.tag }}
+        labels: ${{ inputs.labels }}
+        provenance: ${{ inputs.attestations == 'true' && 'mode=max' || 'false' }}
+        sbom: ${{ inputs.attestations == 'true' }}
+    - name: Preserve Docker build record
+      if: always() && (steps.build.outcome == 'success' || steps.build.outcome == 'failure')
+      uses: ashtonian/go-ci-actions/build-record@4425a5fdd39bd4f2fba5be7ee71314b145a6e591 # v1.8.0 candidate (go-ci-actions#18)
+      with:
+        metadata: ${{ steps.build.outputs.metadata }}
+    # Verified by digest, so the check reads exactly what was pushed.
+    - name: Verify every platform
+      shell: bash
+      env:
+        VERIFY_WITH_BUILDKIT: "true"
+        PLATFORMS: ${{ inputs.platforms }}
+        REF: ${{ inputs.image }}@${{ steps.build.outputs.digest }}
+      run: PLATFORMS=${PLATFORMS//,/ } scripts/verify-image.sh "$REF"
