@@ -1,7 +1,9 @@
 name: Release
 
-# Every push to main is tested, then released if its commits call for one
-# (see .releaserc.yaml). The image is built, pushed under its version and verified before the
+# Every push to main is planned: semantic-release works out whether its
+# commits call for a release (see .releaserc.yaml). Only a release runs CI,
+# which skips the checks the merged pull request already passed on the same
+# tree. The image is built, pushed under its version and verified before the
 # Git tag exists, so a tag never points at a missing or broken image and a
 # failed run can simply be re-run.
 
@@ -26,16 +28,7 @@ env:
   SEMANTIC_RELEASE_VERSION: 25.0.9
 
 jobs:
-  ci:
-    uses: ./.github/workflows/ci.yaml
-    secrets:
-      CI_ARTIFACT_ENDPOINT: ${{ secrets.CI_ARTIFACT_ENDPOINT }}
-    permissions:
-      id-token: write
-      contents: read
-
   plan:
-    needs: ci
     if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository))
     runs-on: arc-charmap
     timeout-minutes: 10
@@ -60,8 +53,19 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  image:
+  ci:
     needs: plan
+    if: needs.plan.outputs.version != ''
+    uses: ./.github/workflows/ci.yaml
+    secrets:
+      CI_ARTIFACT_ENDPOINT: ${{ secrets.CI_ARTIFACT_ENDPOINT }}
+    permissions:
+      id-token: write
+      contents: read
+      actions: read
+
+  image:
+    needs: [plan, ci]
     if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository)) && (needs.plan.outputs.version != '')
     runs-on: arc-charmap
     timeout-minutes: 30

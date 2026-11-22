@@ -412,7 +412,13 @@ release. It tests on Linux and macOS with the two supported Go versions,
 runs lint, govulncheck, actionlint, shellcheck and the smoke test. On a pull
 request it also builds the linux/amd64 image, without attestations, with the
 same action a release uses (`.github/actions/image`), and checks with
-`scripts/verify-image.sh` that it runs a binary built for its platform.
+`scripts/verify-image.sh` that it runs a binary built for its platform. The
+pull request's run ends by recording a receipt of the tested merge tree
+([go-ci-actions acceptance](https://github.com/ashtonian/go-ci-actions#push-acceptance));
+when a release calls CI for the push that merged it, the tests and lint are
+skipped because they already passed on the same tree, and the `reuse pull
+request validation` job's summary links that run. A squash or rebase merge,
+a re-run or a pull request run older than six hours runs them again.
 
 **Docker Hub description** (`.github/workflows/dockerhub-description.yaml`)
 copies this README to the Docker Hub page whenever it changes on `main`.
@@ -421,8 +427,9 @@ copies this README to the Docker Hub page whenever it changes on `main`.
 Versions follow [Conventional Commits](https://www.conventionalcommits.org/):
 `fix:` releases a patch, `feat:` a minor version, and a `BREAKING CHANGE:`
 footer or `!` a major version. Other commit types do not release. The workflow
-runs CI, works out the next version, builds both platforms' binaries on the
-runner, builds, pushes and verifies the image under that version with provenance and
+works out the next version first; a push that releases nothing stops there.
+For a release it runs CI, builds both platforms' binaries on the runner,
+builds, pushes and verifies the image under that version with provenance and
 an SBOM, and only then creates the Git tag and GitHub release and moves the
 `latest`, major and minor image tags. If any step fails, no tag exists and a
 re-run produces the same version. It needs the `DOCKERHUB_USERNAME` and
