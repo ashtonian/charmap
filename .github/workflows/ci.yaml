@@ -53,13 +53,13 @@ jobs:
         with:
           persist-credentials: false
       # Go loads the package graph.
-      - uses: ashtonian/go-ci-actions@08c90cf92313762d7c2a1d85f665403ee3f53c0f # v1.8.0
+      - uses: ashtonian/go-ci-actions@4404b5c0617f86383381bd07ca8a72eeb11863df # v1.10.0
         with:
           go-version-file: go.mod
       # The image's inputs are the binary's package graph (".", main) and the
       # files that build and check it.
       - id: scope
-        uses: ashtonian/go-ci-actions/scope@08c90cf92313762d7c2a1d85f665403ee3f53c0f # v1.8.0
+        uses: ashtonian/go-ci-actions/scope@4404b5c0617f86383381bd07ca8a72eeb11863df # v1.10.0
         with:
           # A release calls this workflow from release.yaml.
           workflow: ci.yaml
@@ -97,12 +97,13 @@ jobs:
           done
       - id: accepted
         if: github.event_name == 'push'
-        uses: ashtonian/go-ci-actions/acceptance@08c90cf92313762d7c2a1d85f665403ee3f53c0f # v1.8.0
+        uses: ashtonian/go-ci-actions/acceptance@4404b5c0617f86383381bd07ca8a72eeb11863df # v1.10.0
         with:
           mode: verify
           # The caller's workflow is release.yaml; receipts are this file's.
           workflow: ci.yaml
           required: ${{ steps.scope.outputs.jobs }}
+          base: ${{ steps.scope.outputs.base }}
           variables: ${{ toJSON(vars) }}
   test:
     name: test (go ${{ matrix.go }}, ${{ matrix.os }})
@@ -124,7 +125,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ashtonian/go-ci-actions@08c90cf92313762d7c2a1d85f665403ee3f53c0f # v1.8.0
+      - uses: ashtonian/go-ci-actions@4404b5c0617f86383381bd07ca8a72eeb11863df # v1.10.0
         with:
           workload: ${{ toJSON(matrix) }}
           go-version: ${{ matrix.go }}
@@ -155,7 +156,7 @@ jobs:
       # govulncheck checks the standard library of the Go that runs it, so
       # this job resolves the newest released patch rather than the one the
       # runner image carries.
-      - uses: ashtonian/go-ci-actions@08c90cf92313762d7c2a1d85f665403ee3f53c0f # v1.8.0
+      - uses: ashtonian/go-ci-actions@4404b5c0617f86383381bd07ca8a72eeb11863df # v1.10.0
         with:
           go-version: "1.27.x"
           check-latest: "true"
@@ -218,7 +219,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ashtonian/go-ci-actions/acceptance@08c90cf92313762d7c2a1d85f665403ee3f53c0f # v1.8.0
+      - uses: ashtonian/go-ci-actions/acceptance@4404b5c0617f86383381bd07ca8a72eeb11863df # v1.10.0
         with:
           mode: record
           results: ${{ toJSON(needs) }}
