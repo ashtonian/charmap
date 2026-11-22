@@ -407,18 +407,32 @@ implementation on every input it accepts. The `internal/tree` tests run
 against real temporary directories, covering partial failures, symlinks, hard
 links, FIFOs, pruning, size limits, concurrent modification and cancellation.
 
-**CI** (`.github/workflows/ci.yaml`) runs on pull requests and before every
-release. It tests on Linux and macOS with the two supported Go versions,
-runs lint, govulncheck, actionlint, shellcheck and the smoke test. On a pull
-request it also builds the linux/amd64 image, without attestations, with the
-same action a release uses (`.github/actions/image`), and checks with
-`scripts/verify-image.sh` that it runs a binary built for its platform. The
-pull request's run ends by recording a receipt of the tested merge tree
-([go-ci-actions acceptance](https://github.com/ashtonian/go-ci-actions#push-acceptance));
-when a release calls CI for the push that merged it, the tests and lint are
-skipped because they already passed on the same tree, and the `reuse pull
-request validation` job's summary links that run. A squash or rebase merge,
-a re-run or a pull request run older than six hours runs them again.
+**CI** (`.github/workflows/ci.yaml`) runs on pull requests, before every
+release, every night at 04:37 UTC and by hand. A `scope` job
+([go-ci-actions scope](https://github.com/ashtonian/go-ci-actions#change-scope))
+picks the jobs a change needs and the packages they check:
+
+| Job | Runs when | Checks |
+|---|---|---|
+| `test` | an affected package, or `scripts/smoke.sh` | vet and race tests on Linux and macOS with both supported Go versions; the `FuzzRender` fuzz run when `internal/token` is affected; the smoke test when the binary (the root package) is affected |
+| `lint` | an affected package, `.golangci.yml`, a workflow, the image action or a script | golangci-lint and govulncheck on the affected packages, actionlint, shellcheck |
+| `image` | the binary is affected, or `Dockerfile`, the image action, `scripts/build-binaries.sh` or `scripts/verify-image.sh` changed | builds the linux/amd64 image, without attestations, with the same action a release uses (`.github/actions/image`), and checks with `scripts/verify-image.sh` that it runs a binary built for its platform (not on a release, which builds both platforms itself) |
+
+The affected packages are the ones holding a changed file plus every package
+that imports one. A pull request is measured from the base it merges into; a
+release from the last green CI run on `main`, the nightly included. A change
+to `ci.yaml`, `go.mod` or `go.sum`, or a pull request labelled `full-ci`, runs
+everything, as do the nightly (skipped when `main` has not moved since the last
+green one) and a manual run. A change to a job's own files reruns that job
+over every package.
+
+The pull request's run ends by recording a receipt of the tested merge tree
+and the jobs that passed
+([go-ci-actions acceptance](https://github.com/ashtonian/go-ci-actions#push-acceptance)).
+When a release calls CI for the push that merged it, every job that release
+needs is skipped if the pull request passed it on the same tree, and the
+scope job's summary links that run. A squash or rebase merge, a re-run or a
+pull request run older than six hours runs them instead.
 
 **Docker Hub description** (`.github/workflows/dockerhub-description.yaml`)
 copies this README to the Docker Hub page whenever it changes on `main`.
