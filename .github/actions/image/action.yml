@@ -30,7 +30,7 @@ outputs:
 runs:
   using: composite
   steps:
-    - uses: ashtonian/go-ci-actions@4425a5fdd39bd4f2fba5be7ee71314b145a6e591 # v1.8.0 candidate (go-ci-actions#18)
+    - uses: ashtonian/go-ci-actions@08c90cf92313762d7c2a1d85f665403ee3f53c0f # v1.8.0
       with:
         go-version-file: go.mod
     - name: Cross-compile the binaries
@@ -58,7 +58,7 @@ runs:
         sbom: ${{ inputs.attestations == 'true' }}
     - name: Preserve Docker build record
       if: always() && (steps.build.outcome == 'success' || steps.build.outcome == 'failure')
-      uses: ashtonian/go-ci-actions/build-record@4425a5fdd39bd4f2fba5be7ee71314b145a6e591 # v1.8.0 candidate (go-ci-actions#18)
+      uses: ashtonian/go-ci-actions/build-record@08c90cf92313762d7c2a1d85f665403ee3f53c0f # v1.8.0
       with:
         metadata: ${{ steps.build.outputs.metadata }}
     # Verified by digest, so the check reads exactly what was pushed.
