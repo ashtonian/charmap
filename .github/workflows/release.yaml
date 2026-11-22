@@ -21,7 +21,7 @@ concurrency:
 
 env:
   DOCKER_BUILD_RECORD_UPLOAD: "false"
-  CI_ARTIFACT_ENDPOINT: ${{ vars.CI_ARTIFACT_ENDPOINT }}
+  CI_ARTIFACT_ENDPOINT: ${{ secrets.CI_ARTIFACT_ENDPOINT }}
   IMAGE: docker.io/ashtonian/charmap
   SEMANTIC_RELEASE_VERSION: 25.0.9
 
