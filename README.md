@@ -430,9 +430,10 @@ The pull request's run ends by recording a receipt of the tested merge tree
 and the jobs that passed
 ([go-ci-actions acceptance](https://github.com/ashtonian/go-ci-actions#push-acceptance)).
 When a release calls CI for the push that merged it, every job that release
-needs is skipped if the pull request passed it on the same tree, and the
-scope job's summary links that run. A squash or rebase merge, a re-run or a
-pull request run older than six hours runs them instead.
+needs is skipped if the pull request passed it on the same tree and the
+commit it merges onto has a green CI run, and the scope job's summary links
+that run. A red parent, a squash or rebase merge, a re-run or a pull request
+run older than six hours runs them instead.
 
 **Docker Hub description** (`.github/workflows/dockerhub-description.yaml`)
 copies this README to the Docker Hub page whenever it changes on `main`.
