@@ -8,6 +8,11 @@ on:
   pull_request:
   # Release runs this workflow before publishing anything.
   workflow_call:
+    # A called workflow sees only the secrets its caller passes.
+    secrets:
+      CI_ARTIFACT_ENDPOINT:
+        description: Artifact gateway origin, kept in a secret so run logs mask it
+        required: true
 
 permissions:
   id-token: write
