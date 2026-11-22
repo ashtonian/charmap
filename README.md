@@ -393,19 +393,47 @@ go test -run '^$' -bench . -benchmem ./internal/...           # benchmarks
 golangci-lint run ./...
 go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 scripts/smoke.sh                                              # builds and exercises the binary
-docker buildx build --platform linux/amd64,linux/arm64 -t charmap:dev .
+scripts/build-binaries.sh build/image dev linux/amd64 linux/arm64  # cross-compiles the image's binaries
+docker buildx build --platform linux/amd64,linux/arm64 -f Dockerfile -t charmap:dev build/image
 ```
+
+The image holds a binary cross-compiled on the build host: its build context
+is `build/image`, with one binary per platform at `<os>/<arch>/charmap`, and
+nothing compiles or runs inside the image build. The Go that builds it is the
+`toolchain` line of `go.mod`.
 
 `FuzzRender` checks the scanner against an independent regular-expression
 implementation on every input it accepts. The `internal/tree` tests run
 against real temporary directories, covering partial failures, symlinks, hard
 links, FIFOs, pruning, size limits, concurrent modification and cancellation.
 
-**CI** (`.github/workflows/ci.yaml`) runs on pull requests and before every
-release. It tests on Linux and macOS with the two supported Go versions,
-runs lint, govulncheck, actionlint, shellcheck and the smoke test. It also
-builds the image for both platforms and checks with `scripts/verify-image.sh`
-that each platform runs a binary built for it.
+**CI** (`.github/workflows/ci.yaml`) runs on pull requests, before every
+release, every night at 04:37 UTC and by hand. A `scope` job
+([go-ci-actions scope](https://github.com/ashtonian/go-ci-actions#change-scope))
+picks the jobs a change needs and the packages they check:
+
+| Job | Runs when | Checks |
+|---|---|---|
+| `test` | an affected package, or `scripts/smoke.sh` | vet and race tests on Linux and macOS with both supported Go versions; the `FuzzRender` fuzz run when `internal/token` is affected; the smoke test when the binary (the root package) is affected |
+| `lint` | an affected package, `.golangci.yml`, a workflow, the image action or a script | golangci-lint and govulncheck on the affected packages, actionlint, shellcheck |
+| `image` | the binary is affected, or `Dockerfile`, the image action, `scripts/build-binaries.sh` or `scripts/verify-image.sh` changed | builds the linux/amd64 image, without attestations, with the same action a release uses (`.github/actions/image`), and checks with `scripts/verify-image.sh` that it runs a binary built for its platform (not on a release, which builds both platforms itself) |
+
+The affected packages are the ones holding a changed file plus every package
+that imports one. A pull request is measured from the base it merges into; a
+release from the last green CI run on `main`, the nightly included. A change
+to `ci.yaml`, `go.mod` or `go.sum`, or a pull request labelled `full-ci`, runs
+everything, as do the nightly (skipped when `main` has not moved since the last
+green one) and a manual run. A change to a job's own files reruns that job
+over every package.
+
+The pull request's run ends by recording a receipt of the tested merge tree
+and the jobs that passed
+([go-ci-actions acceptance](https://github.com/ashtonian/go-ci-actions#push-acceptance)).
+When a release calls CI for the push that merged it, every job that release
+needs is skipped if the pull request passed it on the same tree and the
+commit it merges onto has a green CI run, and the scope job's summary links
+that run. A red parent, a squash or rebase merge, a re-run or a pull request
+run older than six hours runs them instead.
 
 **Docker Hub description** (`.github/workflows/dockerhub-description.yaml`)
 copies this README to the Docker Hub page whenever it changes on `main`.
@@ -414,8 +442,10 @@ copies this README to the Docker Hub page whenever it changes on `main`.
 Versions follow [Conventional Commits](https://www.conventionalcommits.org/):
 `fix:` releases a patch, `feat:` a minor version, and a `BREAKING CHANGE:`
 footer or `!` a major version. Other commit types do not release. The workflow
-works out the next version, builds, pushes and verifies the image under that
-version, and only then creates the Git tag and GitHub release and moves the
+works out the next version first; a push that releases nothing stops there.
+For a release it runs CI, builds both platforms' binaries on the runner,
+builds, pushes and verifies the image under that version with provenance and
+an SBOM, and only then creates the Git tag and GitHub release and moves the
 `latest`, major and minor image tags. If any step fails, no tag exists and a
 re-run produces the same version. It needs the `DOCKERHUB_USERNAME` and
 `DOCKERHUB_TOKEN` repository secrets.
@@ -429,8 +459,10 @@ re-run produces the same version. It needs the `DOCKERHUB_USERNAME` and
 | `internal/values` | Builds the value map from `--set`, `--env` and `--env-prefix`. |
 | `internal/tree` | Walks `--dir`, reads files safely, renders them with a bounded worker pool, stages output and commits it by rename. |
 | `scripts/smoke.sh` | End-to-end checks of the built binary. |
+| `scripts/build-binaries.sh` | Cross-compiles the image's binaries into the per-platform context layout. |
 | `scripts/verify-image.sh` | Checks each platform of an image runs a binary for that platform. |
-| `Dockerfile` | Cross-compiled multi-platform build onto distroless static. |
+| `Dockerfile` | Copies a platform's pre-built binary onto distroless static. |
+| `.github/actions/image/` | Builds the binaries and the image, records the build and verifies it; used by CI and release. |
 | `.github/workflows/` | CI, release and the Docker Hub description. |
 | `.releaserc.yaml` | semantic-release configuration. |
 

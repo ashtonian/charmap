@@ -1,9 +1,11 @@
 name: Release
 
-# Every push to main is tested, then released if its commits call for one
-# (see .releaserc.yaml). The image is built, pushed under its version and
-# verified before the Git tag exists, so a tag never points at a missing or
-# broken image and a failed run can simply be re-run.
+# Every push to main is planned: semantic-release works out whether its
+# commits call for a release (see .releaserc.yaml). Only a release runs CI,
+# which skips the checks the merged pull request already passed on the same
+# tree. The image is built, pushed under its version and verified before the
+# Git tag exists, so a tag never points at a missing or broken image and a
+# failed run can simply be re-run.
 
 on:
   push:
@@ -26,16 +28,7 @@ env:
   SEMANTIC_RELEASE_VERSION: 25.0.9
 
 jobs:
-  ci:
-    uses: ./.github/workflows/ci.yaml
-    secrets:
-      CI_ARTIFACT_ENDPOINT: ${{ secrets.CI_ARTIFACT_ENDPOINT }}
-    permissions:
-      id-token: write
-      contents: read
-
   plan:
-    needs: ci
     if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository))
     runs-on: arc-charmap
     timeout-minutes: 10
@@ -60,8 +53,19 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  image:
+  ci:
     needs: plan
+    if: needs.plan.outputs.version != ''
+    uses: ./.github/workflows/ci.yaml
+    secrets:
+      CI_ARTIFACT_ENDPOINT: ${{ secrets.CI_ARTIFACT_ENDPOINT }}
+    permissions:
+      id-token: write
+      contents: read
+      actions: read
+
+  image:
+    needs: [plan, ci]
     if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository)) && (needs.plan.outputs.version != '')
     runs-on: arc-charmap
     timeout-minutes: 30
@@ -72,59 +76,23 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-      - name: Restore Docker Go caches
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - uses: ./.github/actions/image
         with:
-          path: .build-cache
-          key: docker-go-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Dockerfile', 'go.mod', 'go.sum') }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: |
-            docker-go-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Dockerfile', 'go.mod', 'go.sum') }}-
-            docker-go-v1-${{ runner.os }}-${{ runner.arch }}-
-      - name: Restore BuildKit Go caches
-        uses: reproducible-containers/buildkit-cache-dance@5422eac04292c961a382e0f584ea0f03ad9da723 # v3.4.0
-        with:
-          scratch-dir: ${{ runner.temp }}/buildkit-cache-dance
-          cache-map: |
-            {
-              ".build-cache/go-build": "/root/.cache/go-build",
-              ".build-cache/go-mod": "/go/pkg/mod"
-            }
-
-      - id: build
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        with:
-          context: .
-          cache-from: type=gha,scope=charmap
-          cache-to: type=gha,mode=max,scope=charmap
           platforms: linux/amd64,linux/arm64
-          push: true
-          provenance: mode=max
-          sbom: true
-          tags: ${{ env.IMAGE }}:${{ needs.plan.outputs.version }}
-          build-args: VERSION=v${{ needs.plan.outputs.version }}
+          version: v${{ needs.plan.outputs.version }}
+          image: ${{ env.IMAGE }}
+          tag: ${{ needs.plan.outputs.version }}
+          attestations: "true"
           labels: |
             org.opencontainers.image.title=charmap
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.version=${{ needs.plan.outputs.version }}
             org.opencontainers.image.licenses=GPL-3.0-only
-      - name: Preserve Docker build record
-        if: always() && (steps.build.outcome == 'success' || steps.build.outcome == 'failure')
-        timeout-minutes: 5
-        uses: ashtonian/go-ci-actions/build-record@fd722a57af04549dc44eeb876c53c72da97d7faf # v1.5.0
-        with:
-          metadata: ${{ steps.build.outputs.metadata }}
-
-      - name: Verify every platform
-        env:
-          VERIFY_WITH_BUILDKIT: "true"
-          REF: ${{ env.IMAGE }}@${{ steps.build.outputs.digest }}
-        run: scripts/verify-image.sh "$REF"
 
   release:
     needs: [plan, image]

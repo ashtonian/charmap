@@ -33,3 +33,4 @@ go.work.sum
 
 /charmap
 .DS_Store
+/build/
